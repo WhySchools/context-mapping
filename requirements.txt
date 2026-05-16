@@ -1,0 +1,7 @@
+tree-sitter>=0.22.0
+tree-sitter-rust>=0.23.0
+tree-sitter-typescript>=0.23.0
+click>=8.0
+rich>=13.0
+pyyaml>=6.0
+# optional: watchdog>=4.0  # cho watch mode
