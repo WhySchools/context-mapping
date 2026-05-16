@@ -64,13 +64,67 @@ Stdout của `load` phải sạch tuyệt đối — chỉ có content của con
 1. Đọc .context/GLOBAL.md
 2. python cli.py load <module> . --include-manual
 3. Kiểm tra TENSIONS.md — có OPEN entry nào liên quan không?
-4. Nếu [manual] còn template, đừng viết những gì liên quan đến environment → DỪNG, hỏi human
-5. Viết test FAIL trước
-6. Implement cho đến khi test PASS
-7. python cli.py build . --quiet   ← verify tool tự build được
-8. Cập nhật .context/<module>.md [manual] nếu có decision mới
-9. Nếu detect tension → ghi vào TENSIONS.md trước khi tiếp tục
+4. Nếu [manual] còn template → DỪNG, hỏi human
+5. Đừng viết những gì liên quan đến local environment 
+6. Viết test FAIL trước
+7. Implement cho đến khi test PASS
+8. python cli.py build . --quiet   ← verify tool tự build được
+9. Cập nhật .context/<module>.md [manual] nếu có decision mới
+10. Nếu detect tension → ghi vào TENSIONS.md trước khi tiếp tục
 ```
+
+---
+
+## 2.1. Environment
+
+### WSL
+
+Khi làm việc trên Windows và có Debian WSL, ưu tiên chạy toolchain Python trong WSL thay vì Windows Store `python.exe`.
+
+Nếu repo nằm trên Windows filesystem, ví dụ:
+
+```bash
+/mnt/d/Github/context-mapping
+```
+
+KHÔNG tạo venv bên trong repo bằng:
+
+```bash
+python3 -m venv .venv
+```
+
+Lý do: venv trên `/mnt/<drive>` có thể fail với lỗi permission kiểu:
+
+```text
+Operation not permitted: '/mnt/d/Github/context-mapping/.venv/bin/activate.csh'
+```
+
+Phương án đúng: tạo venv trong Linux filesystem, rồi dùng nó khi đứng trong repo Windows mount.
+
+```bash
+mkdir -p ~/.venvs
+python3 -m venv ~/.venvs/context-mapping
+source ~/.venvs/context-mapping/bin/activate
+cd /mnt/d/Github/context-mapping
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install tree-sitter-php watchdog
+```
+
+Mỗi session mới:
+
+```bash
+source ~/.venvs/context-mapping/bin/activate
+cd /mnt/d/Github/context-mapping
+```
+
+Nếu `.venv` đã bị tạo dở trong repo Windows mount, có thể xóa nó trước khi tiếp tục:
+
+```bash
+rm -rf /mnt/d/Github/context-mapping/.venv
+```
+
+Phương án tốt nhất về lâu dài: clone repo vào Linux filesystem (`~/context-mapping`) và tạo `.venv` trong repo Linux đó.
 
 ---
 

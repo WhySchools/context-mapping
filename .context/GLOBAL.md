@@ -80,11 +80,6 @@ for plugin in REGISTRY.values():
 
 `ipc_label` thuộc về plugin vì plugin là người biết ngữ nghĩa của IPC bridge trong ecosystem của nó.
 
-## [manual] Local Environment Notes
-
-- 2026-05-17: Checked `wsl -l -v` on the Windows host. WSL is available as a command, but no Linux distributions are installed, so there is no active WSL distro to use. Use the Windows/PowerShell environment for this workspace until a distro is installed.
-- 2026-05-17 update: Running `wsl -l -v` outside the sandbox shows `Debian` installed and running on WSL 2. The default distro is currently `podman-machine-default`, not Debian. In this Codex session, sandboxed WSL commands still report no distro, while escalated `wsl -d Debian ...` commands time out; Debian may need a manual WSL restart/first-run initialization before agents can reliably use it.
-
 ## [manual] Invariants & Constraints — Phase: all
 
 - `[manual]` section KHÔNG BAO GIỜ bị tool overwrite. Đây là invariant cốt lõi của toàn bộ project. Bất kỳ thay đổi nào trong `merger.py` phải verify lại invariant này.
