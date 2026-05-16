@@ -18,11 +18,21 @@ def _render_auto(ctx: ModuleContext) -> str:
     lines.append(f"> Source files: {len(ctx.source_files)}")
     lines.append("")
 
-    # Tauri commands (nổi bật nhất — LLM cần biết ngay)
+    # IPC bridge (Tauri commands, WordPress hooks, v.v.)
+    # Dùng ipc_label từ plugin nếu có, fallback về "IPC / Hook Bridge"
+    from schema import REGISTRY
+    plugin = REGISTRY.get(ctx.language)
+    ipc_label = plugin.ipc_label if plugin else "IPC / Hook Bridge"
+
     if ctx.tauri_commands:
-        lines.append("## [auto] Tauri Commands (IPC Bridge)")
+        lines.append(f"## [auto] {ipc_label}")
         lines.append("")
-        lines.append("Các hàm được expose ra frontend qua `invoke()`:")
+        if ctx.language == "rust":
+            lines.append("Các hàm được expose ra frontend qua `invoke()`:")
+        elif ctx.language == "php":
+            lines.append("Các hàm được hook vào WordPress qua `add_action()` / `add_filter()`:")
+        else:
+            lines.append("Các hàm được expose qua IPC bridge:")
         lines.append("")
         for cmd in ctx.tauri_commands:
             fn = next((f for f in ctx.public_functions if f.name == cmd), None)
@@ -31,34 +41,39 @@ def _render_auto(ctx: ModuleContext) -> str:
                     lines.append(f"- **`{fn.name}`** — {fn.doc_comment}")
                 else:
                     lines.append(f"- **`{fn.name}`**")
-                lines.append(f"  ```rust")
-                lines.append(f"  {fn.signature()}")
+                lang_fence = ctx.language if ctx.language in ("rust", "typescript", "php") else "text"
+                lines.append(f"  ```{lang_fence}")
+                lines.append(f"  {fn.signature(ctx.language)}")   # ← FIX: pass language
                 lines.append(f"  ```")
             else:
                 lines.append(f"- **`{cmd}`**")
         lines.append("")
 
-    # Public API
+    # Public API (non-IPC)
     non_cmd_fns = [f for f in ctx.public_functions
                    if f.name not in ctx.tauri_commands]
     if non_cmd_fns:
         lines.append("## [auto] Public Functions")
         lines.append("")
+        lang_fence = ctx.language if ctx.language in ("rust", "typescript", "php") else "text"
         for fn in non_cmd_fns:
             doc_str = f" — {fn.doc_comment}" if fn.doc_comment else ""
             lines.append(f"### `{fn.name}` (line {fn.line}){doc_str}")
-            if ctx.language == "rust":
-                lang = "rust"
-            else:
-                lang = "typescript"
-            lines.append(f"```{lang}")
-            lines.append(fn.signature())
+            lines.append(f"```{lang_fence}")
+            lines.append(fn.signature(ctx.language))               # ← FIX: pass language
             lines.append("```")
             lines.append("")
 
-    # Types / Structs / Interfaces
+    # Types / Structs / Interfaces / Classes
     if ctx.structs:
-        label = "Structs" if ctx.language == "rust" else "Types & Interfaces"
+        if ctx.language == "rust":
+            label = "Structs"
+        elif ctx.language == "typescript":
+            label = "Types & Interfaces"
+        elif ctx.language == "php":
+            label = "Classes & Interfaces"
+        else:
+            label = "Types"
         lines.append(f"## [auto] {label}")
         lines.append("")
         for s in ctx.structs:
@@ -70,7 +85,7 @@ def _render_auto(ctx: ModuleContext) -> str:
                 lines.append("")
                 lines.append("| Field | Type |")
                 lines.append("|-------|------|")
-                for field_str in s.fields[:10]:  # cap at 10
+                for field_str in s.fields[:10]:
                     parts = field_str.split(":", 1)
                     if len(parts) == 2:
                         fname = parts[0].strip().lstrip("pub").strip()
@@ -82,7 +97,7 @@ def _render_auto(ctx: ModuleContext) -> str:
                     lines.append(f"| _(+{len(s.fields)-10} more)_ | |")
             lines.append("")
 
-    # Dependencies (top-level imports, deduped, max 10)
+    # Dependencies
     if ctx.imports:
         lines.append("## [auto] Key Imports")
         lines.append("")
@@ -115,15 +130,12 @@ def merge_context_file(ctx: ModuleContext, output_path: Path) -> str:
         existing = output_path.read_text(encoding="utf-8")
 
         if AUTO_START in existing and AUTO_END in existing:
-            # Replace only the auto block
             start_idx = existing.index(AUTO_START)
             end_idx   = existing.index(AUTO_END) + len(AUTO_END)
             new_content = existing[:start_idx] + auto_block + existing[end_idx:]
         else:
-            # File existed but no markers — prepend auto, append manual template
             new_content = auto_block + "\n\n" + existing
     else:
-        # Brand new file
         new_content = auto_block + "\n\n" + MANUAL_SECTION
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

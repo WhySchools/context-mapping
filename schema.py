@@ -4,7 +4,7 @@ Phần [auto] do tool generate, phần [manual] do con người viết.
 Tool KHÔNG BAO GIỜ overwrite vùng [manual].
 """
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable
 from pathlib import Path
 
 
@@ -18,15 +18,36 @@ class FunctionInfo:
     doc_comment: Optional[str]
     line: int
 
-    def signature(self) -> str:
-        prefix = ""
-        if self.is_public:
-            prefix += "pub "
-        if self.is_async:
-            prefix += "async "
-        params = ", ".join(self.params)
-        ret = f" -> {self.return_type}" if self.return_type else ""
-        return f"{prefix}fn {self.name}({params}){ret}"
+    def signature(self, language: str = "rust") -> str:
+        """Sinh function signature đúng syntax theo language."""
+        if language == "rust":
+            prefix = ""
+            if self.is_public:
+                prefix += "pub "
+            if self.is_async:
+                prefix += "async "
+            params = ", ".join(self.params)
+            ret = f" -> {self.return_type}" if self.return_type else ""
+            return f"{prefix}fn {self.name}({params}){ret}"
+
+        elif language == "typescript":
+            prefix = "export "
+            if self.is_async:
+                prefix += "async "
+            params = ", ".join(self.params)
+            ret = f": {self.return_type}" if self.return_type else ""
+            return f"{prefix}function {self.name}({params}){ret}"
+
+        elif language == "php":
+            params = ", ".join(self.params)
+            ret = f": {self.return_type}" if self.return_type else ""
+            vis = "public " if self.is_public else ""
+            return f"{vis}function {self.name}({params}){ret}"
+
+        else:
+            params = ", ".join(self.params)
+            ret = f" -> {self.return_type}" if self.return_type else ""
+            return f"function {self.name}({params}){ret}"
 
 
 @dataclass
@@ -42,12 +63,36 @@ class StructInfo:
 class ModuleContext:
     """Context của một thư mục/module."""
     path: str                          # relative path từ project root
-    language: str                      # "rust" | "typescript"
+    language: str                      # "rust" | "typescript" | "php"
     public_functions: list[FunctionInfo] = field(default_factory=list)
     structs: list[StructInfo] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)
-    tauri_commands: list[str] = field(default_factory=list)  # fn có #[tauri::command]
+    tauri_commands: list[str] = field(default_factory=list)  # IPC hooks: tauri::command, add_action, add_filter
     source_files: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ParserPlugin:
+    """
+    Plugin descriptor cho một ngôn ngữ.
+    Thêm language mới = tạo ParserPlugin + register vào REGISTRY.
+    Không cần sửa cli.py hay merger.py.
+    """
+    language: str                      # "rust" | "typescript" | "php"
+    extensions: list[str]             # [".php"] hoặc [".ts", ".tsx"]
+    find_dirs: Callable                # fn(root: Path) -> list[Path]
+    parse_dir: Callable                # fn(dir: Path, root: Path) -> ModuleContext
+    skip_dirs: set[str] = field(default_factory=set)
+    ipc_label: str = "IPC / Hook Bridge"  # label thay cho "Tauri Commands"
+
+
+# Registry toàn cục — populated bởi từng parser module khi import
+REGISTRY: dict[str, "ParserPlugin"] = {}
+
+
+def register_plugin(plugin: ParserPlugin) -> None:
+    """Đăng ký một parser plugin vào registry."""
+    REGISTRY[plugin.language] = plugin
 
 
 # Markers dùng để tách vùng auto vs manual trong file .context.md

@@ -8,10 +8,12 @@ from typing import Optional, Generator
 import tree_sitter_rust as tsr
 from tree_sitter import Language, Parser, Node
 
-from schema import FunctionInfo, StructInfo, ModuleContext
+from schema import FunctionInfo, StructInfo, ModuleContext, ParserPlugin, register_plugin
 
 RUST_LANG = Language(tsr.language())
 _parser = Parser(RUST_LANG)
+
+_SKIP_DIRS = {"target", ".git"}
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -36,12 +38,8 @@ def _walk(node: Node) -> Generator[Node, None, None]:
         yield from _walk(child)
 
 
-# ─── doc comment extraction ─────────────────────────────────────────────────
-
 def _extract_doc_comment(node: Node, src: bytes) -> Optional[str]:
-    """Lấy /// doc comment đứng ngay trước node."""
     lines = []
-    # Traverse prev siblings
     parent = node.parent
     if parent is None:
         return None
@@ -60,16 +58,13 @@ def _extract_doc_comment(node: Node, src: bytes) -> Optional[str]:
             else:
                 break
         elif sib.type in ("attribute_item",):
-            i -= 1  # skip attributes, keep looking
+            i -= 1
         else:
             break
     return "\n".join(lines) if lines else None
 
 
-# ─── attribute helpers ───────────────────────────────────────────────────────
-
 def _has_attribute(node: Node, src: bytes, attr: str) -> bool:
-    """Check if node has #[attr] in the contiguous attribute block directly above it."""
     parent = node.parent
     if parent is None:
         return False
@@ -77,7 +72,6 @@ def _has_attribute(node: Node, src: bytes, attr: str) -> bool:
     idx = next((i for i, c in enumerate(siblings) if c.id == node.id), -1)
     if idx <= 0:
         return False
-    # Walk backwards, only through attribute_item and whitespace — stop at anything else
     i = idx - 1
     while i >= 0:
         sib = siblings[i]
@@ -87,7 +81,6 @@ def _has_attribute(node: Node, src: bytes, attr: str) -> bool:
                 return True
             i -= 1
         elif sib.is_named and sib.type not in ("line_comment", "block_comment"):
-            # Hit another statement/item — stop
             break
         else:
             i -= 1
@@ -95,7 +88,6 @@ def _has_attribute(node: Node, src: bytes, attr: str) -> bool:
 
 
 def _extract_derives(node: Node, src: bytes) -> list[str]:
-    """Lấy #[derive(A, B)] từ struct."""
     derives: list[str] = []
     parent = node.parent
     if parent is None:
@@ -107,30 +99,20 @@ def _extract_derives(node: Node, src: bytes) -> list[str]:
         if sib.type == "attribute_item":
             t = _text(sib, src)
             if "derive" in t:
-                # extract inner idents
                 inner = t[t.find("(") + 1:t.rfind(")")] if "(" in t else ""
                 derives.extend(d.strip() for d in inner.split(",") if d.strip())
     return derives
 
 
-# ─── function parser ─────────────────────────────────────────────────────────
-
-def _parse_function(node: Node, src: bytes) -> Optional[FunctionInfo]:
-    """Parse a function_item node."""
-    # visibility
+def _parse_function(node: Node, src: bytes):
     vis = _first_child_of_type(node, "visibility_modifier")
     is_public = vis is not None and "pub" in _text(vis, src)
-
-    # async
     is_async = any(c.type == "async" for c in node.children)
-
-    # name
     name_node = _first_child_of_type(node, "identifier")
     if name_node is None:
         return None
     name = _text(name_node, src)
 
-    # params
     params_node = _first_child_of_type(node, "parameters")
     params: list[str] = []
     if params_node:
@@ -138,13 +120,6 @@ def _parse_function(node: Node, src: bytes) -> Optional[FunctionInfo]:
             if param.type in ("parameter", "self_parameter"):
                 params.append(_text(param, src).strip())
 
-    # return type
-    ret_node = _first_child_of_type(node, "type_identifier",
-                                     "scoped_type_identifier",
-                                     "generic_type",
-                                     "reference_type",
-                                     "tuple_type")
-    # better: look for -> then next type node
     ret_type: Optional[str] = None
     found_arrow = False
     for c in node.children:
@@ -169,12 +144,9 @@ def _parse_function(node: Node, src: bytes) -> Optional[FunctionInfo]:
     ), is_cmd
 
 
-# ─── struct parser ───────────────────────────────────────────────────────────
-
 def _parse_struct(node: Node, src: bytes) -> Optional[StructInfo]:
     vis = _first_child_of_type(node, "visibility_modifier")
     is_public = vis is not None and "pub" in _text(vis, src)
-
     name_node = _first_child_of_type(node, "type_identifier")
     if name_node is None:
         return None
@@ -190,22 +162,11 @@ def _parse_struct(node: Node, src: bytes) -> Optional[StructInfo]:
     doc = _extract_doc_comment(node, src)
     derives = _extract_derives(node, src)
 
-    return StructInfo(
-        name=name,
-        is_public=is_public,
-        fields=fields,
-        doc_comment=doc,
-        derives=derives,
-    )
+    return StructInfo(name=name, is_public=is_public, fields=fields,
+                      doc_comment=doc, derives=derives)
 
 
-# ─── file parser ─────────────────────────────────────────────────────────────
-
-def parse_rust_file(path: Path) -> tuple[list[FunctionInfo], list[StructInfo], list[str], list[str]]:
-    """
-    Returns (functions, structs, imports, tauri_commands).
-    tauri_commands là tên các fn có #[tauri::command].
-    """
+def parse_rust_file(path: Path):
     src = path.read_bytes()
     tree = _parser.parse(src)
 
@@ -223,29 +184,22 @@ def parse_rust_file(path: Path) -> tuple[list[FunctionInfo], list[StructInfo], l
                     functions.append(fn)
                 if is_cmd:
                     tauri_commands.append(fn.name)
-
         elif node.type == "struct_item":
             s = _parse_struct(node, src)
             if s and s.is_public:
                 structs.append(s)
-
         elif node.type == "use_declaration":
-            t = _text(node, src).strip()
+            t = src[node.start_byte:node.end_byte].decode("utf-8", errors="replace").strip()
             if t:
                 imports.append(t)
 
     return functions, structs, imports, tauri_commands
 
 
-# ─── directory parser ────────────────────────────────────────────────────────
-
 def parse_rust_directory(dir_path: Path, project_root: Path) -> ModuleContext:
-    """Parse toàn bộ .rs files trong một thư mục (không recursive)."""
     rel = str(dir_path.relative_to(project_root))
     ctx = ModuleContext(path=rel, language="rust")
-
-    rs_files = sorted(dir_path.glob("*.rs"))
-    for f in rs_files:
+    for f in sorted(dir_path.glob("*.rs")):
         ctx.source_files.append(str(f.relative_to(project_root)))
         fns, structs, imports, cmds = parse_rust_file(f)
         ctx.public_functions.extend(fns)
@@ -254,5 +208,26 @@ def parse_rust_directory(dir_path: Path, project_root: Path) -> ModuleContext:
         for imp in imports:
             if imp not in ctx.imports:
                 ctx.imports.append(imp)
-
     return ctx
+
+
+def _find_rust_dirs(root: Path) -> list[Path]:
+    dirs: list[Path] = []
+    for rs in root.rglob("*.rs"):
+        if any(p in rs.parts for p in _SKIP_DIRS):
+            continue
+        if rs.parent not in dirs:
+            dirs.append(rs.parent)
+    return sorted(dirs)
+
+
+# ─── Register plugin ─────────────────────────────────────────────────────────
+
+register_plugin(ParserPlugin(
+    language="rust",
+    extensions=[".rs"],
+    find_dirs=_find_rust_dirs,
+    parse_dir=parse_rust_directory,
+    skip_dirs=_SKIP_DIRS,
+    ipc_label="Tauri Commands (IPC Bridge)",
+))

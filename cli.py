@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-context-gen: sinh context map cho dự án Tauri từ AST.
+context-gen: sinh context map cho dự án Tauri/WordPress từ AST.
 
 Dùng:
     python cli.py build                    # scan toàn bộ project
@@ -11,6 +11,9 @@ Dùng:
 File output: .context/<path_with_underscores>.md
 Phần [auto] được regenerate mỗi lần chạy.
 Phần [manual] KHÔNG BAO GIỜ bị xóa.
+
+Thêm language mới: tạo parsers/<lang>_parser.py với register_plugin() ở cuối.
+cli.py không cần sửa.
 """
 from __future__ import annotations
 import sys
@@ -19,41 +22,24 @@ import click
 from rich.console import Console
 from rich.tree import Tree as RichTree
 
-# Thêm project root vào sys.path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from parsers.rust_parser import parse_rust_directory
-from parsers.ts_parser import parse_ts_directory
+# Import schema trước — REGISTRY cần tồn tại trước khi parsers register
+from schema import REGISTRY, AUTO_START, AUTO_END
 from merger import merge_context_file
 from global_context import generate_global_context
-from schema import AUTO_START, AUTO_END
+
+# Import parsers để trigger register_plugin() của mỗi language.
+# Thêm language mới: chỉ cần import ở đây.
+import parsers.rust_parser   # noqa: F401
+import parsers.ts_parser     # noqa: F401
+import parsers.php_parser    # noqa: F401
 
 console = Console()
+stderr = Console(stderr=True)   # dùng cho noise trong load command
+
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
-
-def _find_rust_dirs(root: Path) -> list[Path]:
-    """Tìm các thư mục chứa .rs files (không đệ quy vào target/)."""
-    dirs: list[Path] = []
-    for rs in root.rglob("*.rs"):
-        if "target" in rs.parts or ".git" in rs.parts:
-            continue
-        if rs.parent not in dirs:
-            dirs.append(rs.parent)
-    return sorted(dirs)
-
-
-def _find_ts_dirs(root: Path) -> list[Path]:
-    """Tìm các thư mục chứa .ts/.tsx files (bỏ qua node_modules, dist)."""
-    dirs: list[Path] = []
-    skip = {"node_modules", "dist", ".git", "target", ".vite"}
-    for ts in list(root.rglob("*.ts")) + list(root.rglob("*.tsx")):
-        if any(p in ts.parts for p in skip):
-            continue
-        if ts.parent not in dirs:
-            dirs.append(ts.parent)
-    return sorted(dirs)
-
 
 def _output_path(project_root: Path, dir_path: Path) -> Path:
     """Map src-tauri/src/commands → .context/src-tauri_src_commands.md"""
@@ -62,25 +48,36 @@ def _output_path(project_root: Path, dir_path: Path) -> Path:
     return project_root / ".context" / f"{stem}.md"
 
 
-def _process_directory(dir_path: Path, project_root: Path) -> tuple[str, int, int]:
+def _process_directory(
+    dir_path: Path,
+    project_root: Path,
+    quiet: bool = False,
+) -> tuple[str, int, int]:
     """
-    Auto-detect language và parse một thư mục.
+    Detect language qua REGISTRY và parse một thư mục.
     Returns (output_path_str, fn_count, struct_count).
-    """
-    rs_files = list(dir_path.glob("*.rs"))
-    ts_files = list(dir_path.glob("*.ts")) + list(dir_path.glob("*.tsx"))
 
+    Không cần sửa hàm này khi thêm language mới —
+    chỉ cần register_plugin() trong parser tương ứng.
+    """
     out_path = _output_path(project_root, dir_path)
 
-    if rs_files:
-        ctx = parse_rust_directory(dir_path, project_root)
-        merge_context_file(ctx, out_path)
-        return str(out_path.relative_to(project_root)), len(ctx.public_functions), len(ctx.structs)
+    for plugin in REGISTRY.values():
+        files = [
+            f
+            for ext in plugin.extensions
+            for f in dir_path.glob(f"*{ext}")
+        ]
+        if not files:
+            continue
 
-    elif ts_files:
-        ctx = parse_ts_directory(dir_path, project_root)
+        ctx = plugin.parse_dir(dir_path, project_root)
         merge_context_file(ctx, out_path)
-        return str(out_path.relative_to(project_root)), len(ctx.public_functions), len(ctx.structs)
+        return (
+            str(out_path.relative_to(project_root)),
+            len(ctx.public_functions),
+            len(ctx.structs),
+        )
 
     return "", 0, 0
 
@@ -89,7 +86,7 @@ def _process_directory(dir_path: Path, project_root: Path) -> tuple[str, int, in
 
 @click.group()
 def cli():
-    """context-gen: AST-based context map generator cho Tauri projects."""
+    """context-gen: AST-based context map generator cho Tauri/WordPress projects."""
     pass
 
 
@@ -109,11 +106,15 @@ def build(project_root: str, path: str | None, quiet: bool):
             sys.exit(1)
         dirs = [target]
     else:
-        rs_dirs = _find_rust_dirs(root)
-        ts_dirs = _find_ts_dirs(root)
-        # Merge, dedupe
-        all_dirs = list({d for d in rs_dirs + ts_dirs})
-        dirs = sorted(all_dirs)
+        # Gom tất cả dirs từ mọi plugin đã register
+        seen: set[Path] = set()
+        dirs: list[Path] = []
+        for plugin in REGISTRY.values():
+            for d in plugin.find_dirs(root):
+                if d not in seen:
+                    seen.add(d)
+                    dirs.append(d)
+        dirs.sort()
 
     if not dirs:
         console.print("[yellow]Không tìm thấy source files.[/yellow]")
@@ -125,11 +126,10 @@ def build(project_root: str, path: str | None, quiet: bool):
     module_paths: list[str] = []
     total_fns = 0
     total_types = 0
-
     tree = RichTree(f"[bold].context/[/bold]")
 
     for d in dirs:
-        out, fn_count, struct_count = _process_directory(d, root)
+        out, fn_count, struct_count = _process_directory(d, root, quiet)
         if not out:
             continue
         rel = str(d.relative_to(root))
@@ -142,7 +142,6 @@ def build(project_root: str, path: str | None, quiet: bool):
                 f"[dim]{fn_count} fn, {struct_count} types[/dim]"
             )
 
-    # Global context
     generate_global_context(root, module_paths)
 
     if not quiet:
@@ -168,28 +167,28 @@ def load(target_path: str, project_root: str, include_manual: bool):
     Ví dụ:
         python cli.py load src-tauri/src/commands | pbcopy
         python cli.py load src-tauri/src/commands --include-manual
+        python cli.py load wp-content/plugins/my-plugin/includes --include-manual
     """
     root = Path(project_root).resolve()
     target = Path(target_path).resolve()
 
-    # First regenerate
-    _process_directory(target, root)
+    # Regenerate nhưng suppress console output — stdout phải sạch để pipe
+    _process_directory(target, root, quiet=True)
 
     out_path = _output_path(root, target)
     if not out_path.exists():
-        console.print(f"[red]Context file không tồn tại: {out_path}[/red]")
+        stderr.print(f"[red]Context file không tồn tại: {out_path}[/red]")
         sys.exit(1)
 
     content = out_path.read_text(encoding="utf-8")
 
     if not include_manual:
-        # Extract only auto section
         if AUTO_START in content and AUTO_END in content:
             start = content.index(AUTO_START) + len(AUTO_START)
             end   = content.index(AUTO_END)
             content = content[start:end].strip()
 
-    # Print raw (no rich markup) for piping
+    # Print raw — không có rich markup để pipe sạch
     print(content)
 
 
@@ -197,7 +196,7 @@ def load(target_path: str, project_root: str, include_manual: bool):
 @click.argument("project_root", default=".", type=click.Path(exists=True))
 def watch(project_root: str):
     """
-    Watch mode: tự động regenerate khi .rs/.ts files thay đổi.
+    Watch mode: tự động regenerate khi source files thay đổi.
     Cần: pip install watchdog
     """
     try:
@@ -209,21 +208,35 @@ def watch(project_root: str):
         sys.exit(1)
 
     root = Path(project_root).resolve()
+
+    # Tất cả extensions đã register
+    watched_exts = {
+        ext
+        for plugin in REGISTRY.values()
+        for ext in plugin.extensions
+    }
+
+    all_skip = {
+        s
+        for plugin in REGISTRY.values()
+        for s in plugin.skip_dirs
+    }
+
     console.print(f"[cyan]Watching[/cyan] {root} ...")
+    console.print(f"[dim]Extensions: {', '.join(sorted(watched_exts))}[/dim]")
 
     class Handler(FileSystemEventHandler):
         def on_modified(self, event):
             if event.is_directory:
                 return
             p = Path(event.src_path)
-            if p.suffix not in (".rs", ".ts", ".tsx"):
+            if p.suffix not in watched_exts:
                 return
-            skip = {"target", "node_modules", "dist", ".git"}
-            if any(s in p.parts for s in skip):
+            if any(s in p.parts for s in all_skip):
                 return
             console.print(f"[dim]changed:[/dim] {p.name}")
             try:
-                _process_directory(p.parent, root)
+                _process_directory(p.parent, root, quiet=True)
                 console.print(f"[green]✓[/green] {p.parent.relative_to(root)}")
             except Exception as e:
                 console.print(f"[red]Error:[/red] {e}")
