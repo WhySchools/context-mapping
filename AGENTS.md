@@ -160,6 +160,8 @@ Decision:   [human fill in]
 
 Khi được yêu cầu thêm language mới (ví dụ Python, Go, Vue):
 
+Trước khi implement parser mới, dùng prompt template `docs/prompts/add-parser.md`. Agent phải chạy proposal phase trước, human approve rồi mới code.
+
 ```
 □ Kiểm tra tree-sitter-<lang> có trên PyPI không
 □ Probe AST node types trước khi viết parser

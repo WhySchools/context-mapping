@@ -35,22 +35,39 @@ _Chưa có ghi chú._
 <!-- MANUAL_END -->"""
 
 
-def generate_global_context(project_root: Path, module_paths: list[str]) -> None:
+def _has_source_file(project_root: Path, pattern: str, skip_dirs: set[str]) -> bool:
+    for path in project_root.rglob(pattern):
+        rel_parts = path.relative_to(project_root).parts
+        if not any(part in skip_dirs for part in rel_parts):
+            return True
+    return False
+
+
+def _context_file_for_module_path(module_path: str) -> str:
+    stem = module_path.replace("/", "_").replace("\\", "_")
+    return f".context/{stem}.md"
+
+
+def generate_global_context(project_root: Path, module_paths: list[str], quiet: bool = False) -> None:
     """Sinh .context/GLOBAL.md với danh sách modules được index."""
     output = project_root / ".context" / "GLOBAL.md"
 
     # Detect tech stack từ file system
+    skip_dirs = {"vendor", "node_modules", ".git", "cache", "tmp", "dist", "target"}
     has_tauri  = (project_root / "src-tauri").exists()
+    has_rust   = has_tauri or _has_source_file(project_root, "*.rs", skip_dirs)
     has_ts     = any(project_root.glob("src/**/*.ts"))
     has_tsx    = any(project_root.glob("src/**/*.tsx"))
     has_vue    = any(project_root.glob("src/**/*.vue"))
     has_svelte = any(project_root.glob("src/**/*.svelte"))
+    has_php    = _has_source_file(project_root, "*.php", skip_dirs)
     cargo_toml = project_root / "src-tauri" / "Cargo.toml"
 
     stack_parts = []
     if has_tauri:
         stack_parts.append("Tauri v2")
-    stack_parts.append("Rust (backend)")
+    if has_rust:
+        stack_parts.append("Rust (backend)")
     if has_tsx:
         stack_parts.append("React + TypeScript (frontend)")
     elif has_vue:
@@ -59,6 +76,8 @@ def generate_global_context(project_root: Path, module_paths: list[str]) -> None
         stack_parts.append("Svelte + TypeScript (frontend)")
     elif has_ts:
         stack_parts.append("TypeScript (frontend)")
+    if has_php:
+        stack_parts.append("PHP / WordPress")
 
     # Extract Rust dependencies từ Cargo.toml nếu có
     rust_deps: list[str] = []
@@ -92,7 +111,7 @@ def generate_global_context(project_root: Path, module_paths: list[str]) -> None
     lines.append("Load file context của module cụ thể khi làm việc với nó:")
     lines.append("")
     for mp in sorted(module_paths):
-        context_file = f".context/{mp.replace('/', '_')}.md"
+        context_file = _context_file_for_module_path(mp)
         lines.append(f"- [`{mp}`]({context_file})")
     lines.append("")
 
@@ -123,4 +142,5 @@ def generate_global_context(project_root: Path, module_paths: list[str]) -> None
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(new_content, encoding="utf-8")
-    print(f"  ✓ .context/GLOBAL.md")
+    if not quiet:
+        print(f"  ✓ .context/GLOBAL.md")

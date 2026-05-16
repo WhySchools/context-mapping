@@ -65,24 +65,28 @@ That's the contract.
 ## Setup
 
 ```bash
-pip install git+https://github.com/you/context-gen.git
+git clone https://github.com/you/context-gen.git
+cd context-gen
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 
 # First run — generate all .context/*.md
-context-gen build .
+python cli.py build .
 
 # Auto-update on file save
-context-gen watch .
+python cli.py watch .
 
 # Load context for a specific module (pipe to LLM or clipboard)
-context-gen load src-tauri/src/commands . --include-manual
+python cli.py load src-tauri/src/commands . --include-manual
 ```
 
 Add to `package.json`:
 ```json
 {
   "scripts": {
-    "context:build": "context-gen build .",
-    "context:watch": "context-gen watch ."
+    "context:build": "python cli.py build .",
+    "context:watch": "python cli.py watch ."
   }
 }
 ```
@@ -96,6 +100,7 @@ Add to `package.json`:
 | Rust `.rs` | `pub fn`, `pub async fn`, `#[tauri::command]`, `struct`, `enum`, `///` doc comments |
 | TypeScript `.ts` | `export function`, arrow functions, interfaces, types |
 | TSX `.tsx` | same as TypeScript + React components |
+| PHP `.php` | functions, classes, imports, WordPress `add_action` / `add_filter` string callbacks |
 
 The `[manual]` section works the same regardless of stack.  
 Vue, Svelte, Python, Go — only the parser changes. The philosophy doesn't.

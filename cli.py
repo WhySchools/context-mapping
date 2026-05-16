@@ -142,7 +142,7 @@ def build(project_root: str, path: str | None, quiet: bool):
                 f"[dim]{fn_count} fn, {struct_count} types[/dim]"
             )
 
-    generate_global_context(root, module_paths)
+    generate_global_context(root, module_paths, quiet=quiet)
 
     if not quiet:
         console.print(tree)
