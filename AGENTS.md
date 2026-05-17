@@ -138,7 +138,7 @@ Ghi tension khi agent nhận ra một trong những dấu hiệu sau, **trước
 - Task yêu cầu parser recursive scan → tension với "parse không recursive" invariant
 - Task scope lớn hơn những gì `[manual] Behavior chưa implement` cho phép
 
-**Format**:
+**Format** (dùng cho tension do agent detect thủ công):
 ```markdown
 ## YYYY-MM-DD | <module>
 Status:     OPEN
@@ -149,6 +149,15 @@ Constraint: <invariant nào bị conflict — trích dẫn từ [manual]>
 Severity:   low | high
 Decision:   [human fill in]
 ```
+
+> **Lưu ý**: `tensions_writer.py` sinh staleness entries tự động theo format khác (dùng `###` headings, `Decision: Pending`).
+> Khi grep TENSIONS.md để tìm entries cần review, dùng cả hai:
+> ```bash
+> # Agent-written tensions (manual format)
+> grep -A8 "Status.*OPEN" .context/TENSIONS.md
+> # Staleness warnings (auto-generated format)
+> grep -B2 "Decision" .context/TENSIONS.md | grep "Pending" -A2
+> ```
 
 **Routing**:
 - `low` → ghi tension, tiếp tục theo hướng conservative nhất, human review sau
@@ -186,7 +195,8 @@ Trước khi implement parser mới, dùng prompt template `docs/prompts/add-par
 | `.context/GLOBAL.md` [auto] section | auto-generated, sẽ bị overwrite |
 | `.context/TENSIONS.md` entries đã RESOLVED | lịch sử không được sửa |
 | `MANUAL_SECTION` template trong `schema.py` | agent dựa vào template để detect [manual] chưa điền |
-| `AUTO_START` / `AUTO_END` markers | thay đổi markers = break toàn bộ merge logic |
+| `AUTO_START` / `AUTO_END` markers trong `schema.py` | thay đổi markers = break toàn bộ merge logic |
+| Hash trong `AUTO_START` marker của `.context/*.md` | merger V3 inject `\| hash: <8chars> \| built: <timestamp>` vào marker — đây là metadata cho staleness detection, không phải lỗi format |
 
 ---
 
@@ -198,7 +208,7 @@ Sau mỗi thay đổi, phải pass tất cả:
 # Tool tự build được không bị crash
 python cli.py build /tmp/test-project . --quiet
 
-# load stdout sạch (không có noise)
+# load stdout sạch (không có noise — staleness warning đi stderr, không stdout)
 python cli.py load /tmp/test-project/src . | python3 -c "
 import sys
 content = sys.stdin.read()
@@ -217,4 +227,8 @@ print('Registry OK:', list(REGISTRY.keys()))
 # [manual] không bị xóa sau build
 python cli.py build /tmp/test-project . --quiet
 grep -q 'MANUAL_START' /tmp/test-project/.context/*.md && echo "MANUAL preserved OK"
+
+# Staleness detection hoạt động — hash được inject vào marker sau build
+python cli.py build /tmp/test-project . --quiet
+grep -q 'AUTO_START | hash:' /tmp/test-project/.context/*.md && echo "Hash injection OK"
 ```

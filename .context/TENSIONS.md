@@ -61,13 +61,14 @@ Rationale:  Perfect là kẻ thù của done. 80% coverage của string callback
 
 ---
 
-## OPEN | global_context.py → PHP stack detection
+## 2026-05-17 | global_context.py → PHP stack detection
 
-**Status**: OPEN
+**Status**: RESOLVED
 
 Tension:    `generate_global_context()` không detect PHP — GLOBAL.md không list PHP trong Tech Stack
 Context:    Sau khi thêm php_parser, WP projects vẫn không thấy "PHP" trong stack overview
 Proposal:   Thêm `has_php = any(root.glob("**/*.php"))` và skip vendor/
 Constraint: Chưa có constraint rõ ràng
 Severity:   low
-Decision:   [human fill in]
+Decision:   Already fixed. `global_context.py` đã có `has_php = _has_source_file(project_root, "*.php", skip_dirs)` và append "PHP / WordPress" vào stack_parts. Tension này là false alarm — fix đã có trong codebase trước khi entry được ghi.
+Rationale:  Kiểm tra file thực tế trước khi open tension. `_has_source_file()` đã handle skip_dirs đúng cách.

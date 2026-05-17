@@ -1,10 +1,15 @@
 """
 Merger: sinh phần [auto] từ ModuleContext, giữ nguyên phần [manual].
 Đây là trái tim của "không overwrite viết tay".
+
+V3: inject hash của [auto] content vào AUTO_START marker sau mỗi lần build.
+    Đây là nền tảng để staleness detection hoạt động.
+    Không thay đổi gì khác so với V2.
 """
 from __future__ import annotations
 from pathlib import Path
 from schema import ModuleContext, AUTO_START, AUTO_END, MANUAL_SECTION
+from staleness import compute_hash, inject_hash_into_marker
 
 
 # ─── render auto section ─────────────────────────────────────────────────────
@@ -19,7 +24,6 @@ def _render_auto(ctx: ModuleContext) -> str:
     lines.append("")
 
     # IPC bridge (Tauri commands, WordPress hooks, v.v.)
-    # Dùng ipc_label từ plugin nếu có, fallback về "IPC / Hook Bridge"
     from schema import REGISTRY
     plugin = REGISTRY.get(ctx.language)
     ipc_label = plugin.ipc_label if plugin else "IPC / Hook Bridge"
@@ -43,7 +47,7 @@ def _render_auto(ctx: ModuleContext) -> str:
                     lines.append(f"- **`{fn.name}`**")
                 lang_fence = ctx.language if ctx.language in ("rust", "typescript", "php") else "text"
                 lines.append(f"  ```{lang_fence}")
-                lines.append(f"  {fn.signature(ctx.language)}")   # ← FIX: pass language
+                lines.append(f"  {fn.signature(ctx.language)}")
                 lines.append(f"  ```")
             else:
                 lines.append(f"- **`{cmd}`**")
@@ -60,7 +64,7 @@ def _render_auto(ctx: ModuleContext) -> str:
             doc_str = f" — {fn.doc_comment}" if fn.doc_comment else ""
             lines.append(f"### `{fn.name}` (line {fn.line}){doc_str}")
             lines.append(f"```{lang_fence}")
-            lines.append(fn.signature(ctx.language))               # ← FIX: pass language
+            lines.append(fn.signature(ctx.language))
             lines.append("```")
             lines.append("")
 
@@ -121,19 +125,36 @@ def merge_context_file(ctx: ModuleContext, output_path: Path) -> str:
       - Giữ nguyên phần MANUAL
     Nếu file chưa tồn tại:
       - Tạo mới với cả auto lẫn template manual
-    Trả về nội dung cuối cùng.
+
+    V3: sau khi build xong, inject hash của [auto] content vào AUTO_START marker.
+    Hash này dùng bởi staleness.check_file() ở lần build sau.
+
+    Returns nội dung cuối cùng đã được write.
     """
     auto_content = _render_auto(ctx)
-    auto_block = f"{AUTO_START}\n{auto_content}\n{AUTO_END}"
+
+    # Tính hash TRƯỚC khi assemble block — hash chỉ của content, không của marker
+    new_hash = compute_hash(auto_content)
+
+    # AUTO_START marker có hash nhúng vào
+    auto_start_with_hash = inject_hash_into_marker(AUTO_START, new_hash)
+    auto_block = f"{auto_start_with_hash}\n{auto_content}\n{AUTO_END}"
 
     if output_path.exists():
         existing = output_path.read_text(encoding="utf-8")
 
-        if AUTO_START in existing and AUTO_END in existing:
-            start_idx = existing.index(AUTO_START)
-            end_idx   = existing.index(AUTO_END) + len(AUTO_END)
-            new_content = existing[:start_idx] + auto_block + existing[end_idx:]
+        # Tìm AUTO_START (có thể có hoặc không có hash cũ)
+        import re
+        auto_start_pattern = re.compile(r"<!--\s*AUTO_START[^>]*-->", re.IGNORECASE)
+        start_m = auto_start_pattern.search(existing)
+        end_idx = existing.find(AUTO_END)
+
+        if start_m and end_idx != -1:
+            before = existing[:start_m.start()]
+            after = existing[end_idx + len(AUTO_END):]
+            new_content = before + auto_block + after
         else:
+            # Markers không tìm thấy → prepend, giữ nguyên phần còn lại
             new_content = auto_block + "\n\n" + existing
     else:
         new_content = auto_block + "\n\n" + MANUAL_SECTION
