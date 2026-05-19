@@ -62,6 +62,43 @@ That's the contract.
 
 ---
 
+## The Designs
+
+```mermaid
+flowchart TD
+    Human(("Human"))
+    Agent(("AI Agent"))
+
+    Code["Source Code"]
+    Auto["Auto Context<br/>what code says"]
+    Manual["Manual Context<br/>why it exists"]
+    ContextMap["Context Map<br/>shared project memory"]
+    Change["Code Change"]
+    Drift["Drift Detection"]
+    Tension["Tension Register"]
+    Decision["Decision"]
+
+    Code --> Auto
+    Auto --> ContextMap
+    Manual --> ContextMap
+
+    ContextMap --> Agent
+    Agent --> Change
+    Change --> Code
+    Change --> Drift
+    Drift --> Tension
+
+    Tension --> Human
+    Human --> Decision
+    Decision --> Manual
+
+    Human -. "owns intent" .-> Manual
+    Human -. "reviews conflicts" .-> Tension
+    Agent -. "reads before acting" .-> ContextMap
+```
+
+---
+
 ## Setup
 
 ```bash
