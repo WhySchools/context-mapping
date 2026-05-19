@@ -15,7 +15,7 @@ cat .context/GLOBAL.md
 python cli.py load <module_path> . --include-manual
 
 # Bước 3 — kiểm tra tensions đang OPEN
-cat .context/TENSIONS.md | grep -A8 "Status.*OPEN"
+cat .context/TENSIONS_OPEN.md
 ```
 
 Nếu bước 2 trả về `[manual]` vẫn còn `_Chưa có ghi chú._` → **DỪNG. Hỏi lại human trước khi implement.**
@@ -138,7 +138,8 @@ Ghi tension khi agent nhận ra một trong những dấu hiệu sau, **trước
 - Task yêu cầu parser recursive scan → tension với "parse không recursive" invariant
 - Task scope lớn hơn những gì `[manual] Behavior chưa implement` cho phép
 
-**Format** (dùng cho tension do agent detect thủ công):
+**Format** (dùng cho tension do agent detect thủ công — ghi vào `.context/TENSIONS_OPEN.md`):
+
 ```markdown
 ## YYYY-MM-DD | <module>
 Status:     OPEN
@@ -147,17 +148,39 @@ Context:    <đang làm task gì>
 Proposal:   <agent muốn làm gì>
 Constraint: <invariant nào bị conflict — trích dẫn từ [manual]>
 Severity:   low | high
+Tags:       <tag1, tag2> ← chọn từ taxonomy Section 3.1
+Milestone:  <current milestone từ MILESTONES.md>
 Decision:   [human fill in]
 ```
 
-> **Lưu ý**: `tensions_writer.py` sinh staleness entries tự động theo format khác (dùng `###` headings, `Decision: Pending`).
-> Khi grep TENSIONS.md để tìm entries cần review, dùng cả hai:
-> ```bash
-> # Agent-written tensions (manual format)
-> grep -A8 "Status.*OPEN" .context/TENSIONS.md
-> # Staleness warnings (auto-generated format)
-> grep -B2 "Decision" .context/TENSIONS.md | grep "Pending" -A2
-> ```
+> **Lưu ý**: `tensions_writer.py` sinh staleness entries tự động vào `TENSIONS_OPEN.md`
+> với cùng format structured fields ở trên.
+
+**Load order mỗi task — bắt buộc:**
+
+```
+1. Đọc TENSIONS_OPEN.md     — luôn luôn, toàn bộ
+2. Đọc TENSIONS_ACTIVE.md   — với tag filter:
+     - Extract keywords từ task description
+     - Đọc kỹ entries có tag match
+     - Đọc chỉ Status + Tension của entries không match
+3. KHÔNG đọc TENSIONS_HISTORY.md mặc định
+     Chỉ đọc khi human yêu cầu audit hoặc task liên quan đến decision cũ
+```
+
+**Move rules:**
+
+```
+OPEN → RESOLVED_ACTIVE:
+  Human điền Decision + Resolved date.
+  Move entry từ TENSIONS_OPEN.md sang TENSIONS_ACTIVE.md.
+  Đổi Status: RESOLVED_ACTIVE.
+
+RESOLVED_ACTIVE → ARCHIVED:
+  Chỉ khi human approve milestone transition.
+  Move entries của milestone cũ sang TENSIONS_HISTORY.md.
+  Agent KHÔNG tự archive.
+```
 
 **Routing**:
 - `low` → ghi tension, tiếp tục theo hướng conservative nhất, human review sau
@@ -165,11 +188,33 @@ Decision:   [human fill in]
 
 ---
 
+## 3.1 Tag Taxonomy
+
+Khi viết tension entry mới, chọn tags từ danh sách này.
+Thêm tag mới: update taxonomy ở đây trước, sau đó mới dùng.
+
+```
+blocks          — Gutenberg block development
+tailwind        — Tailwind CSS integration
+woocommerce     — WooCommerce blocks/patterns
+php             — PHP/WordPress plugin code
+theme           — Theme development
+quote-flow      — Quote/pricing flow feature
+schema          — context-gen schema/parser
+cli             — cli.py changes
+registry        — Plugin registry pattern
+staleness       — Staleness detection
+milestone       — Milestone transition decisions
+agent           — Agent workflow/protocol decisions
+```
+
+---
+
 ## 4. Thêm parser mới — checklist
 
 Khi được yêu cầu thêm language mới (ví dụ Python, Go, Vue):
 
-Trước khi implement parser mới, dùng prompt template `docs/prompts/add-parser.md`. Agent phải chạy proposal phase trước, human approve rồi mới code.
+Trước khi implement parser mới, dùng prompt template `docs/prompts/00_add-parser.md`. Agent phải chạy proposal phase trước, human approve rồi mới code.
 
 ```
 □ Kiểm tra tree-sitter-<lang> có trên PyPI không
@@ -193,10 +238,12 @@ Trước khi implement parser mới, dùng prompt template `docs/prompts/add-par
 | File | Lý do |
 |------|-------|
 | `.context/GLOBAL.md` [auto] section | auto-generated, sẽ bị overwrite |
-| `.context/TENSIONS.md` entries đã RESOLVED | lịch sử không được sửa |
+| `.context/TENSIONS_OPEN.md` entries đã RESOLVED_ACTIVE | chỉ move sang ACTIVE, không sửa |
+| `.context/TENSIONS_ACTIVE.md` entries đã ARCHIVED | chỉ move sang HISTORY, không sửa |
+| `.context/TENSIONS.md` (nếu còn) | giữ đến khi human approve xóa sau migrate |
 | `MANUAL_SECTION` template trong `schema.py` | agent dựa vào template để detect [manual] chưa điền |
 | `AUTO_START` / `AUTO_END` markers trong `schema.py` | thay đổi markers = break toàn bộ merge logic |
-| Hash trong `AUTO_START` marker của `.context/*.md` | merger V3 inject `\| hash: <8chars> \| built: <timestamp>` vào marker — đây là metadata cho staleness detection, không phải lỗi format |
+| Hash trong `AUTO_START` marker của `.context/*.md` | metadata cho staleness detection, không phải lỗi format |
 
 ---
 
@@ -208,11 +255,15 @@ Sau mỗi thay đổi, phải pass tất cả:
 # Tool tự build được không bị crash
 python cli.py build /tmp/test-project . --quiet
 
-# load stdout sạch (không có noise — staleness warning đi stderr, không stdout)
+# Consistency check pass
+python cli.py check-consistency .
+
+# load stdout sạch (staleness warning đi stderr, không stdout)
 python cli.py load /tmp/test-project/src . | python3 -c "
 import sys
 content = sys.stdin.read()
 assert '<!-- AUTO_START -->' in content or len(content) > 0
+assert 'WARN' not in content, 'stdout bẩn'
 print('stdout OK:', len(content), 'chars')
 "
 
@@ -228,7 +279,17 @@ print('Registry OK:', list(REGISTRY.keys()))
 python cli.py build /tmp/test-project . --quiet
 grep -q 'MANUAL_START' /tmp/test-project/.context/*.md && echo "MANUAL preserved OK"
 
-# Staleness detection hoạt động — hash được inject vào marker sau build
+# Staleness detection hoạt động
 python cli.py build /tmp/test-project . --quiet
 grep -q 'AUTO_START | hash:' /tmp/test-project/.context/*.md && echo "Hash injection OK"
+
+# TENSIONS_OPEN chỉ chứa OPEN entries
+python3 -c "
+import re, pathlib
+f = pathlib.Path('.context/TENSIONS_OPEN.md')
+if f.exists():
+    bad = re.findall(r'Status:\s+(?!OPEN)', f.read_text())
+    assert not bad, f'Non-OPEN entries in TENSIONS_OPEN: {bad}'
+    print('TENSIONS_OPEN OK')
+"
 ```

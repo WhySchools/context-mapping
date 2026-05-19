@@ -139,6 +139,24 @@ def _print_staleness_summary(stale_results: list[StalenessResult]) -> None:
     console.print("   [dim]→ Chi tiết trong .context/TENSIONS.md[/dim]\n")
 
 
+# ─── V3 helpers ──────────────────────────────────────────────────────────────
+
+def _warn_old_tensions_format(root: Path) -> None:
+    """
+    Warn ra stderr nếu project dùng TENSIONS.md format cũ mà chưa migrate.
+    Chỉ warn — không tự migrate.
+    """
+    old_file = root / ".context" / "TENSIONS.md"
+    new_file = root / ".context" / "TENSIONS_OPEN.md"
+    if old_file.exists() and not new_file.exists():
+        stderr.print(
+            "\n[yellow]⚠  TENSIONS.md format cũ detected.[/yellow]\n"
+            "   Chạy [bold]context-gen migrate-tensions .[/bold] "
+            "để migrate sang V3 format.\n"
+            "   Không tự migrate — cần human review trước.\n"
+        )
+
+
 # ─── commands ────────────────────────────────────────────────────────────────
 
 @click.group()
@@ -159,6 +177,13 @@ def build(project_root: str, path: str | None, quiet: bool):
     """
     root = Path(project_root).resolve()
     context_dir = root / ".context"
+
+    # V3: warn nếu dùng format cũ
+    _warn_old_tensions_format(root)
+
+    # V3: đọc current milestone một lần cho toàn bộ build
+    from tensions_writer import _read_current_milestone
+    current_milestone = _read_current_milestone(context_dir)
 
     if path:
         target = root / path
@@ -223,7 +248,7 @@ def build(project_root: str, path: str | None, quiet: bool):
     # Ghi TENSIONS.md nếu có stale — sau khi print tree để order hợp lý
     if stale_results:
         report = StalenessReport(stale=stale_results)
-        written = write_staleness_tensions(context_dir, report)
+        written = write_staleness_tensions(context_dir, report, milestone=current_milestone)
         _print_staleness_summary(written)
     elif not quiet:
         console.print("[dim]✓ [manual] sections up to date[/dim]\n")
@@ -261,9 +286,11 @@ def load(target_path: str, project_root: str, include_manual: bool):
             f"[yellow]⚠  STALENESS WARNING[/yellow]  {stale.module_name}\n"
             f"   [auto] thay đổi kể từ lần build trước "
             f"({stale.old_hash} → {stale.new_hash})\n"
-            f"   [manual] có thể outdated. Kiểm tra .context/TENSIONS.md."
+            f"   [manual] có thể outdated. Kiểm tra .context/TENSIONS_OPEN.md."
         )
-        write_single_staleness(context_dir, stale)
+        from tensions_writer import _read_current_milestone
+        current_milestone = _read_current_milestone(context_dir)
+        write_single_staleness(context_dir, stale, milestone=current_milestone)
 
     # Output ra stdout — chỉ content, không có rich markup
     content = out_path.read_text(encoding="utf-8")
@@ -343,6 +370,120 @@ def watch(project_root: str):
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
+
+
+@cli.command("check-consistency")
+@click.argument("project_root", default=".", type=click.Path(exists=True))
+def check_consistency(project_root: str):
+    """
+    Verify context files are internally consistent.
+    Exit code 1 nếu có errors, 0 nếu chỉ có warnings hoặc clean.
+    """
+    from consistency import run_consistency_checks
+    root = Path(project_root).resolve()
+    errors, warnings = run_consistency_checks(root)
+
+    for e in errors:
+        stderr.print(f"[red]ERROR[/red]  {e}\n")
+    for w in warnings:
+        stderr.print(f"[yellow]WARN[/yellow]   {w}\n")
+    if not errors and not warnings:
+        console.print("[green]OK[/green]  Context files consistent.")
+
+    raise SystemExit(1 if errors else 0)
+
+
+@cli.command("migrate-tensions")
+@click.argument("project_root", default=".", type=click.Path(exists=True))
+def migrate_tensions(project_root: str):
+    """
+    Preview migration từ TENSIONS.md sang 3 file V3.
+    Hỏi confirm trước khi tạo file. Không xóa TENSIONS.md cũ.
+    """
+    from consistency import parse_tension_entries, format_tensions_file
+
+    root = Path(project_root).resolve()
+    context_dir = root / ".context"
+    old_file = context_dir / "TENSIONS.md"
+
+    if not old_file.exists():
+        console.print("[green]Không tìm thấy TENSIONS.md — không cần migrate.[/green]")
+        return
+
+    open_file    = context_dir / "TENSIONS_OPEN.md"
+    active_file  = context_dir / "TENSIONS_ACTIVE.md"
+    history_file = context_dir / "TENSIONS_HISTORY.md"
+
+    if open_file.exists() or active_file.exists():
+        console.print(
+            "[yellow]TENSIONS_OPEN.md hoặc TENSIONS_ACTIVE.md đã tồn tại.[/yellow]\n"
+            "Migration có thể đã được thực hiện. Kiểm tra trước khi chạy lại."
+        )
+        return
+
+    entries = parse_tension_entries(old_file)
+    open_entries    = [e for e in entries if e["status"] == "OPEN"]
+    active_entries  = [e for e in entries if e["status"] == "RESOLVED_ACTIVE"]
+    history_entries = [e for e in entries if e["status"] == "ARCHIVED"]
+
+    # Preview
+    console.print("\n[bold]Migration preview:[/bold]")
+    console.print(f"\n  [cyan]TENSIONS_OPEN.md[/cyan]     ← {len(open_entries)} entries")
+    for e in open_entries:
+        console.print(f"    [dim]- {e['title']}[/dim]")
+    console.print(f"\n  [cyan]TENSIONS_ACTIVE.md[/cyan]   ← {len(active_entries)} entries")
+    for e in active_entries:
+        console.print(f"    [dim]- {e['title']}[/dim]")
+    console.print(f"\n  [cyan]TENSIONS_HISTORY.md[/cyan]  ← {len(history_entries)} entries")
+    for e in history_entries:
+        console.print(f"    [dim]- {e['title']}[/dim]")
+
+    console.print(
+        "\n[dim]TENSIONS.md cũ sẽ KHÔNG bị xóa.[/dim]\n"
+        "[dim]Xóa thủ công sau khi verify 3 file mới đúng.[/dim]\n"
+    )
+
+    click.confirm("Tiếp tục tạo 3 file mới?", abort=True)
+
+    _OPEN_HEADER = (
+        "# Tensions — OPEN\n\n"
+        "> Chỉ chứa Status: OPEN entries.\n"
+        "> Agent luôn đọc toàn bộ file này trước mỗi task.\n"
+        "> Khi human resolve → move sang TENSIONS_ACTIVE.md, đổi Status: RESOLVED_ACTIVE.\n\n"
+        "---\n\n"
+    )
+    _ACTIVE_HEADER = (
+        "# Tensions — Active\n\n"
+        "> Chỉ chứa Status: RESOLVED_ACTIVE entries của milestone hiện tại.\n"
+        "> Agent đọc file này với tag filter (xem AGENTS.md Section 3.1).\n"
+        "> Move sang TENSIONS_HISTORY.md chỉ khi human approve milestone transition.\n\n"
+        "---\n\n"
+    )
+    _HISTORY_HEADER = (
+        "# Tensions — History\n\n"
+        "> Chỉ chứa Status: ARCHIVED entries.\n"
+        "> KHÔNG load mặc định — chỉ đọc khi human yêu cầu audit.\n"
+        "> Chỉ move entries vào đây khi human approve milestone transition.\n\n"
+        "---\n\n"
+    )
+
+    open_file.write_text(
+        format_tensions_file(_OPEN_HEADER, open_entries), encoding="utf-8"
+    )
+    active_file.write_text(
+        format_tensions_file(_ACTIVE_HEADER, active_entries), encoding="utf-8"
+    )
+    history_file.write_text(
+        format_tensions_file(_HISTORY_HEADER, history_entries), encoding="utf-8"
+    )
+
+    console.print("\n[green]✓[/green] 3 file đã được tạo:")
+    console.print(f"   {open_file.relative_to(root)}")
+    console.print(f"   {active_file.relative_to(root)}")
+    console.print(f"   {history_file.relative_to(root)}")
+    console.print(
+        "\n[dim]Kiểm tra nội dung 3 file, sau đó xóa TENSIONS.md cũ nếu đúng.[/dim]\n"
+    )
 
 
 if __name__ == "__main__":
