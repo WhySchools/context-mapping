@@ -4,7 +4,7 @@
 
 This is not a tool to let AI code for you.  
 This is a tool to force you to think before you build — and make sure the next person (or agent) understands *why*, not just *what*.
-
+And sorry, I don't know how difference between this tool and Agent Harness, the nearest concept is Agentic Engineering
 ---
 
 ## Why this exists
